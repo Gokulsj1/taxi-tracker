@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Live VIP Dashboard</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+  <style>
+    body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    
+    .glass-panel {
+      background: rgba(13, 17, 23, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-right: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .card {
+      background: rgba(30, 41, 59, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      transition: all 0.2s;
+      cursor: pointer;
+    }
+    .card:hover {
+      background: rgba(30, 41, 59, 0.9);
+      border-color: rgba(56, 189, 248, 0.4);
+      transform: translateX(4px);
+    }
+    .card.active {
+      border-left: 3px solid #38bdf8;
+      background: rgba(56, 189, 248, 0.1);
+    }
+
+    .status-ping {
+      height: 8px; width: 8px; border-radius: 50%; display: inline-block;
+    }
+    .status-online {
+      background-color: #22c55e;
+      box-shadow: 0 0 8px #22c55e;
+    }
+    .status-offline {
+      background-color: #64748b;
+    }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    
+    /* Toast Animation */
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    .toast { animation: slideIn 0.3s ease forwards; }
+  </style>
+</head>
+
+<body class="h-screen w-screen overflow-hidden flex">
+
+  <!-- Sidebar -->
+  <div class="w-96 flex flex-col glass-panel relative z-[1000] h-full shadow-2xl flex-shrink-0">
+    <!-- Header -->
+    <div class="p-5 border-b border-gray-800 flex justify-between items-center">
+      <div>
+        <h1 class="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400 tracking-tight">VIP Radar</h1>
+        <div class="text-xs text-gray-500 mt-1 uppercase tracking-wider font-semibold">Live Operational Status</div>
+      </div>
+      <a href="/history" class="text-sm px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-blue-400 transition-colors shadow flex items-center gap-1 border border-slate-700">
+        History
+      </a>
+    </div>
+
+    <!-- Stats -->
+    <div class="grid grid-cols-2 gap-3 p-4 border-b border-gray-800">
+      <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-700/50 flex flex-col items-center">
+        <div class="text-gray-400 text-xs font-semibold tracking-wider uppercase mb-1">Active Now</div>
+        <div class="text-3xl font-bold text-emerald-400" id="stat-active">0</div>
+      </div>
+      <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-700/50 flex flex-col items-center justify-center text-center">
+        <div class="text-gray-400 text-xs font-semibold tracking-wider uppercase mb-1">Top Device</div>
+        <div class="text-sm font-semibold text-white capitalize truncate w-full" id="stat-device">-</div>
+      </div>
+    </div>
+
+    <!-- List -->
+    <div class="flex-1 overflow-y-auto p-4 space-y-3" id="logs">
+      <div class="animate-pulse text-gray-500 text-center mt-10 text-sm">Initializing radar sweep...</div>
+    </div>
+  </div>
+
+  <!-- Map Area -->
+  <div class="flex-1 relative z-0 h-full w-full bg-[#0d1117]" id="map"></div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed top-5 right-5 z-[2000] flex flex-col gap-3 pointer-events-none"></div>
+
+  <script>
+    const SUPABASE_URL = "https://pnkgjndrkvwcmmebmfke.supabase.co";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBua2dqbmRya3Z3Y21tZWJtZmtlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NDg4OTksImV4cCI6MjA5MDAyNDg5OX0.aEkQYuSLlnIBpDUJOhmp9dwqpw40H_Lth-80P2XpBHU";
+
+    // Init Map (Dark Mode)
+    const map = L.map('map', {zoomControl: false}).setView([20, 78], 5);
+    L.control.zoom({position: 'topright'}).addTo(map);
+
+    // Google Maps Labelled Streets
+    L.tileLayer('http://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+      maxZoom: 20,
+      subdomains:['mt0','mt1','mt2','mt3']
+    }).addTo(map);
+
+    // Custom Icons
+    const onlineIcon = L.divIcon({
+      className: '',
+      html: `<div style="background-color:#34d399; width:16px; height:16px; border-radius:50%; border:3px solid #064e3b; box-shadow: 0 0 15px rgba(52,211,153,0.8);"></div>`,
+      iconSize: [16, 16],
+      iconAnchor: [8, 8]
+    });
+    
+    const offlineIcon = L.divIcon({
+      className: '',
+      html: `<div style="background-color:#94a3b8; width:14px; height:14px; border-radius:50%; border:2px solid #334155;"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7]
+    });
+
+    let markers = {};
+    const locationCache = {};
+    const knownWorkers = new Set();
+    let isFirstLoad = true;
+
+    // Notification Sound
+    function playNotificationSound() {
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+        oscillator.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+        oscillator.type = 'sine';
+        oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); 
+        gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+        gainNode.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.1);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.8);
+        oscillator.start(audioCtx.currentTime);
+        oscillator.stop(audioCtx.currentTime + 0.8);
+      } catch(e) { }
+    }
+
+    function showToast(message) {
+      const container = document.getElementById("toast-container");
+      const toast = document.createElement("div");
+      toast.className = "toast bg-slate-800 border border-slate-700 shadow-2xl rounded-lg p-4 flex items-center gap-3 w-80 pointer-events-auto transition-opacity duration-300";
+      toast.innerHTML = `
+        <div class="h-2 w-2 rounded-full bg-emerald-400 shrink-0"></div>
+        <p class="text-sm text-gray-200 font-medium">${message}</p>
+      `;
+      container.appendChild(toast);
+      playNotificationSound();
+
+      setTimeout(() => {
+        toast.style.opacity = "0";
+        setTimeout(() => toast.remove(), 300);
+      }, 4000);
+    }
+
+    // Function to pan to specific worker
+    window.focusWorker = function(id, lat, lon) {
+      map.flyTo([lat, lon], 14, {animate: true, duration: 1});
+      
+      // Update UI active states
+      document.querySelectorAll(".card").forEach(el => el.classList.remove("active"));
+      const targetCard = document.getElementById("card-" + id);
+      if (targetCard) targetCard.classList.add("active");
+      
+      // Briefly enlarge marker
+      if (markers[id]) {
+        markers[id].openPopup();
+      }
+    };
+
+    function getTimeAgoDesc(dateObj) {
+      const seconds = Math.floor((new Date() - dateObj) / 1000);
+      if (seconds < 60) return `${seconds}s ago`;
+      if (seconds < 3600) return `${Math.floor(seconds/60)}m ago`;
+      if (seconds < 86400) return `${Math.floor(seconds/3600)}h ago`;
+      return `${Math.floor(seconds/86400)}d ago`;
+    }
+
+    async function loadData() {
+      try {
+        let res = await fetch(
+          SUPABASE_URL + "/rest/v1/logs?select=*&order=created_at.desc",
+          { headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY } }
+        );
+        let data = await res.json();
+
+        let latest = {};
+        data.forEach(item => {
+          if (!latest[item.worker_id]) {
+            latest[item.worker_id] = item;
+          }
+        });
+
+        // Pre-fetch unknown locations (Throttle API to avoid bans)
+        await Promise.all(Object.values(latest).map(async (item) => {
+          let latNum = parseFloat(item.lat) || 0;
+          let lonNum = parseFloat(item.lon) || 0;
+          if (latNum === 0 && lonNum === 0) return;
+
+          let cacheKey = `${latNum.toFixed(4)},${lonNum.toFixed(4)}`;
+          if (!locationCache[cacheKey]) {
+            try {
+              let locRes = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latNum}&longitude=${lonNum}&localityLanguage=en`);
+              let locData = await locRes.json();
+              let locParts = [locData.locality, locData.city, locData.principalSubdivision, locData.countryName].filter(Boolean);
+              locationCache[cacheKey] = locParts.length > 0 ? Array.from(new Set(locParts)).join(", ") : "Unknown Location";
+            } catch (e) {
+              locationCache[cacheKey] = "Unknown Location";
+            }
+          }
+        }));
+
+        let container = document.getElementById("logs");
+        container.innerHTML = "";
+        let activeCount = 0;
+        let devices = {};
+
+        const now = new Date();
+
+        Object.values(latest).forEach(item => {
+          const latNum = parseFloat(item.lat) || 0;
+          const lonNum = parseFloat(item.lon) || 0;
+          if (latNum === 0 && lonNum === 0) return;
+          
+          const cacheKey = `${latNum.toFixed(4)},${lonNum.toFixed(4)}`;
+          const modelName = item.device?.model || item.device?.platform || "Unknown Web Device";
+          const utcTimeStr = item.created_at.endsWith('Z') ? item.created_at : item.created_at + 'Z';
+          const itemTime = new Date(utcTimeStr);
+          
+          // Online logic: if pinged within last 5 minutes (300 seconds)
+          const isOnline = (now - itemTime) < 300000;
+          if (isOnline) activeCount++;
+
+          // Stats collection
+          const simplerDevice = modelName.split(' ')[0] || modelName;
+          devices[simplerDevice] = (devices[simplerDevice] || 0) + 1;
+
+          // Notifications
+          if (!isFirstLoad && !knownWorkers.has(item.worker_id) && isOnline) {
+            showToast(`New VIP Target Detected: ${item.worker_id}`);
+          }
+          knownWorkers.add(item.worker_id);
+
+          // Marker Logic
+          const iconToUse = isOnline ? onlineIcon : offlineIcon;
+          
+          if (markers[item.worker_id]) {
+            markers[item.worker_id].setLatLng([latNum, lonNum]);
+            markers[item.worker_id].setIcon(iconToUse);
+          } else {
+            markers[item.worker_id] = L.marker([latNum, lonNum], {icon: iconToUse})
+              .addTo(map)
+              .bindPopup(`<b>${item.worker_id}</b><br>${modelName}`);
+          }
+
+          // Build UI Card
+          let div = document.createElement("div");
+          div.className = "card p-4 rounded-xl relative group overflow-hidden";
+          div.id = "card-" + item.worker_id;
+          div.onclick = () => focusWorker(item.worker_id, latNum, lonNum);
+
+          let locationText = locationCache[cacheKey] || "Unknown Location";
+
+          div.innerHTML = `
+            <div class="flex items-center justify-between mb-2">
+              <div class="font-bold text-white tracking-wide">${item.worker_id}</div>
+              <div class="flex items-center gap-1.5 text-xs text-gray-400">
+                <span class="status-ping ${isOnline ? 'status-online' : 'status-offline'}"></span>
+                <span>${isOnline ? 'Active' : getTimeAgoDesc(itemTime)}</span>
+              </div>
+            </div>
+            <div class="text-xs text-slate-300 mb-1.5 truncate pr-4">
+              <span class="opacity-50 mr-1">📍</span> ${locationText}
+            </div>
+            <div class="flex items-center gap-3 mt-2 pt-2 border-t border-slate-700/50">
+              <div class="text-xs text-slate-400 capitalize bg-slate-800/80 px-2 py-0.5 rounded-md">💻 ${modelName}</div>
+              <div class="text-xs font-mono text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity">(${latNum.toFixed(2)}, ${lonNum.toFixed(2)})</div>
+            </div>
+            <div class="absolute right-3 bottom-4 opacity-0 group-hover:opacity-100 transition-all text-blue-400 scale-90">
+              <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+            </div>
+          `;
+          container.appendChild(div);
+        });
+
+        if (Object.keys(latest).length === 0) {
+          container.innerHTML = '<div class="text-center text-slate-500 mt-10 text-sm italic">No active targets found</div>';
+        }
+
+        // Update top stats
+        document.getElementById("stat-active").textContent = activeCount;
+        if (Object.keys(devices).length > 0) {
+          const topDevice = Object.keys(devices).reduce((a, b) => devices[a] > devices[b] ? a : b);
+          document.getElementById("stat-device").textContent = topDevice;
+        } else {
+          document.getElementById("stat-device").textContent = "N/A";
+        }
+
+        isFirstLoad = false;
+      } catch(err) {
+        console.error("Dashboard Sync Error:", err);
+      }
+    }
+
+    loadData();
+    setInterval(loadData, 3000);
+  </script>
+</body>
+</html>

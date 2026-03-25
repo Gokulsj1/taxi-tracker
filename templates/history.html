@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>History Data</title>
+  <style>
+    body { background:#0f172a; color:white; font-family:Arial; padding: 20px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #334155; padding: 10px; text-align: left; }
+    th { background: #1e293b; }
+    a { color: #38bdf8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<h2>📜 Previously Collected Data</h2>
+<a href="/dashboard">⬅ Back to Dashboard</a>
+
+<table id="history-table">
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Worker ID</th>
+      <th>Coordinates</th>
+      <th>Location</th>
+      <th>Device / Model</th>
+    </tr>
+  </thead>
+  <tbody id="logs">
+    <tr><td colspan="5">Loading...</td></tr>
+  </tbody>
+</table>
+
+<script>
+const SUPABASE_URL = "https://pnkgjndrkvwcmmebmfke.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBua2dqbmRya3Z3Y21tZWJtZmtlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0NDg4OTksImV4cCI6MjA5MDAyNDg5OX0.aEkQYuSLlnIBpDUJOhmp9dwqpw40H_Lth-80P2XpBHU";
+
+const locationCache = {};
+
+async function loadData() {
+  try {
+    let res = await fetch(
+      SUPABASE_URL + "/rest/v1/logs?select=*&order=created_at.desc&limit=200",
+      {
+        headers: {
+          "apikey": SUPABASE_KEY,
+          "Authorization": "Bearer " + SUPABASE_KEY
+        }
+      }
+    );
+
+    let data = await res.json();
+    
+    // Process locations gracefully, wait for location mapping
+    // Note: Nominatim limits 1 request per second, so fetching all in parallel might hit their rate limits
+    // Since this can be huge, we'll try to batch or debounce, or better yet, just do it sequentially for a small number of distinct coords.
+    
+    let uniqueCoords = new Set();
+    data.forEach(item => {
+      let latNum = parseFloat(item.lat) || 0;
+      let lonNum = parseFloat(item.lon) || 0;
+      uniqueCoords.add(`${latNum.toFixed(4)},${lonNum.toFixed(4)}|${item.lat}|${item.lon}`);
+    });
+    
+    let uniqueCoordsArr = Array.from(uniqueCoords);
+    
+    // Only resolve up to 10 unique locations here so we don't spam 200 requests to standard nominatim API
+    // It's a prototype so we will resolve as fast as possible but cap it
+    
+    await Promise.all(uniqueCoordsArr.slice(0, 10).map(async (strItem) => {
+      let [cacheKey, lat, lon] = strItem.split("|");
+      if (!locationCache[cacheKey]) {
+        try {
+          let locRes = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
+          let locData = await locRes.json();
+          let locParts = [locData.locality, locData.city, locData.principalSubdivision, locData.countryName].filter(Boolean);
+          locationCache[cacheKey] = locParts.length > 0 ? Array.from(new Set(locParts)).join(", ") : "Unknown Location";
+        } catch (e) {
+          locationCache[cacheKey] = "Unknown Location";
+        }
+      }
+    }));
+
+    let tbody = document.getElementById("logs");
+    tbody.innerHTML = "";
+
+    if (data.length === 0) {
+      tbody.innerHTML = "<tr><td colspan='5'>No data available.</td></tr>";
+      return;
+    }
+
+    data.forEach(item => {
+      let tr = document.createElement("tr");
+      
+      let latNum = parseFloat(item.lat) || 0;
+      let lonNum = parseFloat(item.lon) || 0;
+      let cacheKey = `${latNum.toFixed(4)},${lonNum.toFixed(4)}`;
+      let modelName = item.device?.model || item.device?.platform || "Unknown";
+      let locationText = locationCache[cacheKey] || "Resolving/Unknown Location";
+      let utcTimeStr = item.created_at.endsWith('Z') ? item.created_at : item.created_at + 'Z';
+
+      tr.innerHTML = `
+        <td>${new Date(utcTimeStr).toLocaleString()}</td>
+        <td><b>${item.worker_id}</b></td>
+        <td>📍 ${item.lat}, ${item.lon}</td>
+        <td>🏠 ${locationText}</td>
+        <td>📱 ${modelName}</td>
+      `;
+
+      tbody.appendChild(tr);
+    });
+
+  } catch (err) {
+    document.getElementById("logs").innerHTML = "<tr><td colspan='5'>Error loading history data</td></tr>";
+    console.error(err);
+  }
+}
+
+loadData();
+</script>
+
+</body>
+</html>

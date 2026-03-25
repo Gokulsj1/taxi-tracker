@@ -1,0 +1,11 @@
+tunnel: tracker
+credentials-file: C:\Users\sgoku\.cloudflared\a2072fcc-2ca7-4a36-9465-2c06393d3bd5.json
+
+ingress:
+  - hostname: info.gokulsj.shop
+    service: http://localhost:5000
+
+  - hostname: db.gokulsj.shop
+    service: http://localhost:5000
+
+  - service: http_status:404
